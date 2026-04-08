@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="pl">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>LIONESS KALENDAR — Panel Administratora</title>
+    <script src="https://www.gstatic.com/firebasejs/9.17.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.17.1/firebase-database-compat.js"></script>
+    <style>
+        :root {
+            --bg:#071529; --panel:#0f2743; --muted:#9fb0d0; --accent:#f0b400;
+            --green:#2ecc71; --red:#e74c3c; --radius:12px;
+        }
+        body { margin:0; background:var(--bg); color:#fff; font-family: 'Segoe UI', sans-serif; padding:15px; }
+        .app { max-width:1100px; margin:0 auto; display:grid; grid-template-columns: 1fr 380px; gap:20px; }
+        .panel { background:var(--panel); border-radius:var(--radius); padding:20px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.05); margin-bottom: 20px; }
+        .btn { border:none; color:#fff; padding:10px 15px; border-radius:8px; cursor:pointer; font-weight: bold; transition: 0.2s; }
+        .btn-main { background: var(--accent); color: #000; font-size: 11px; }
+        .btn-details { background: #163a63; color: #fff; font-size: 11px; }
+        
+        #dbStatus { font-size:11px; color:var(--muted); margin-bottom:10px; font-weight: bold; }
+
+        .msg-box { border-bottom: 1px solid rgba(255,255,255,0.1); padding: 15px 0; }
+        .msg-client { color: var(--accent); font-weight: bold; margin-bottom: 5px; }
+        .msg-text { background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px; margin-bottom: 10px; }
+        .admin-reply-input { margin-top: 10px; display: flex; gap: 5px; }
+
+        .grid { display:grid; grid-template-columns:repeat(7,1fr); gap:10px; }
+        .cell { min-height:90px; background:rgba(255,255,255,0.03); border-radius:10px; padding:10px; cursor:pointer; text-align: center; border: 1px solid transparent; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+        .cell.selected { border-color: var(--accent); background:rgba(240, 180, 0, 0.1); }
+        .today-highlight { border: 1px solid var(--accent) !important; box-shadow: inset 0 0 8px var(--accent); }
+        .has-data { border-bottom: 4px solid var(--green); }
+
+        .hour-row { display:flex; justify-content:space-between; align-items:center; padding:12px; background:rgba(255,255,255,0.03); margin-bottom:8px; border-radius:10px; border-left: 5px solid transparent; }
+        .hour-row.reserved { border-left-color: var(--green); background:rgba(46, 204, 113, 0.1); }
+
+        input, textarea { width:100%; padding:12px; border-radius:8px; border:none; background:rgba(255,255,255,0.08); color:#fff; margin-bottom:10px; box-sizing: border-box; }
+        @media (max-width:850px) { .app { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+<div class="app">
+    <div class="main-content">
+        <div class="panel">
+            <div id="dbStatus">Firebase: Łączenie...</div>
+            
+            <div class="header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+                <button onclick="moveMonth(-1)" class="btn" style="background:#163a63;">‹</button>
+                <h2 id="monthTitle" style="margin:0; text-transform: capitalize;"></h2>
+                <button onclick="moveMonth(1)" class="btn" style="background:#163a63;">›</button>
+            </div>
+            <div class="grid" id="calendarGrid"></div>
+        </div>
+        <div class="panel">
+            <h3 style="color:var(--accent); margin-top:0;">📩 Wiadomości od klientów</h3>
+            <div id="adminMessagesList">Ładowanie...</div>
+        </div>
+    </div>
+    <div class="side-content">
+        <div class="panel">
+            <h3 id="selectedDateTitle" style="color:var(--accent)">Data: Wybierz dzień</h3>
+            <div id="hoursList"></div>
+            <div id="bookingForm" style="display:none; margin-top:20px; border-top:1px solid #444; padding-top:20px;">
+                <h4 id="formTimeTitle" style="color:var(--accent);"></h4>
+                <input id="fName" placeholder="Imię i Nazwisko">
+                <input id="fPhone" placeholder="Telefon">
+                <input id="fAddress" placeholder="Adres i Kod pocztowy">
+                <textarea id="fNote" placeholder="Notatki..."></textarea>
+                <div style="display:flex; gap:10px">
+                    <button onclick="saveBooking()" class="btn" style="background:var(--green); color:#000; flex:1;">ZAPISZ</button>
+                    <button id="delBtn" onclick="deleteBooking()" class="btn" style="background:var(--red); flex:1; display:none">USUŃ</button>
+                </div>
+                <button onclick="closeForm()" class="btn" style="width:100%; margin-top:10px; background:transparent; color:var(--muted)">Zamknij</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const firebaseConfig = {
+  apiKey: "AIzaSyAG1ukkW8JC_05JCeZp41EhyoM7VJ2Cl58",
+  authDomain: "kalendar-f5dd9.firebaseapp.com",
+  databaseURL: "https://kalendar-f5dd9-default-rtdb.firebaseio.com",
+  projectId: "kalendar-f5dd9",
+  appId: "1:69464425563:web:137726a05af145bb0c2b7e"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+let currentMonth = new Date();
+let selectedDay = null;
+let globalData = {};
+let globalMessages = null;
+let isFirstLoad = true;
+
+// ФУНКЦІЯ ПЕРЕВІРКИ ПІДКЛЮЧЕННЯ (ЛАМПОЧКА)
+db.ref(".info/connected").on("value", (snap) => {
+    const statusDiv = document.getElementById('dbStatus');
+    if (snap.val() === true) {
+        statusDiv.innerHTML = 'Firebase: Online <span style="color:var(--green)">🟢</span>';
+    } else {
+        statusDiv.innerHTML = 'Firebase: Offline <span style="color:var(--red)">🔴</span>';
+    }
+});
+
+function countTotal(obj) {
+    if (!obj) return 0;
+    let c = 0;
+    Object.keys(obj).forEach(k => { if(typeof obj[k] === 'object') c += Object.keys(obj[k]).length; });
+    return c;
+}
+
+function speakNotification(text) {
+    if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = 'pl-PL';
+        utterance.rate = 0.9;
+        window.speechSynthesis.speak(utterance);
+    }
+}
+
+// СЛУХАЧ БРОНЮВАНЬ
+db.ref("bookings").on("value", (snap) => {
+    const newData = snap.val() || {};
+    if (!isFirstLoad) {
+        const oldC = countTotal(globalData);
+        const newC = countTotal(newData);
+        if (newC > oldC) speakNotification("Masz nową rejestrację zarezerwowaną");
+        else if (newC < oldC) speakNotification("Rezerwacja anulowana");
+    }
+    globalData = newData;
+    renderCalendar();
+    if(selectedDay) renderHours();
+    isFirstLoad = false;
+});
+
+// СЛУХАЧ ПОВІДОМЛЕНЬ
+db.ref("messages").on("value", (snap) => {
+    const msgs = snap.val() || {};
+    if (globalMessages !== null && Object.keys(msgs).length > Object.keys(globalMessages).length) {
+        speakNotification("Masz nową wiadomość od klienta");
+    }
+    globalMessages = msgs;
+    const list = document.getElementById('adminMessagesList');
+    list.innerHTML = '';
+    const keys = Object.keys(msgs).reverse();
+    if(keys.length === 0) list.innerHTML = 'Brak wiadomości.';
+    keys.forEach(key => {
+        const m = msgs[key];
+        const div = document.createElement('div');
+        div.className = 'msg-box';
+        div.innerHTML = `
+            <div class="msg-client">${m.name} (${m.contact || 'brak'})</div>
+            <div class="msg-text">${m.message}</div>
+            <div class="admin-reply-input">
+                <input id="rep_${key}" placeholder="Odpowiedź..." style="margin:0; padding:8px;">
+                <button onclick="sendReply('${key}')" class="btn" style="background:var(--green); color:#000;">OK</button>
+                <button onclick="deleteMsg('${key}')" class="btn" style="background:var(--red);">X</button>
+            </div>
+        `;
+        list.appendChild(div);
+    });
+});
+
+async function sendReply(id) {
+    const val = document.getElementById(`rep_${id}`).value;
+    if(!val) return;
+    await db.ref(`messages/${id}`).update({ reply: val });
+    alert("Wysłano!");
+}
+
+async function deleteMsg(id) { if(confirm("Usunąć?")) await db.ref(`messages/${id}`).remove(); }
+
+function renderCalendar() {
+    const grid = document.getElementById('calendarGrid'); grid.innerHTML = '';
+    const y = currentMonth.getFullYear(), m = currentMonth.getMonth();
+    const now = new Date();
+    const todayStr = `${y}-${String(m+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+    document.getElementById('monthTitle').textContent = new Date(y, m).toLocaleString('pl-PL', {month:'long', year:'numeric'});
+    const startDay = (new Date(y, m, 1).getDay() + 6) % 7;
+    for(let i=0; i<startDay; i++) grid.appendChild(document.createElement('div'));
+    for(let d=1; d<=new Date(y, m+1, 0).getDate(); d++) {
+        const dateStr = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+        const count = globalData[dateStr] ? Object.keys(globalData[dateStr]).length : 0;
+        const cell = document.createElement('div');
+        cell.className = `cell ${selectedDay === dateStr ? 'selected' : ''} ${dateStr === todayStr ? 'today-highlight' : ''} ${count > 0 ? 'has-data' : ''}`;
+        cell.innerHTML = `<b>${d}</b>${count > 0 ? `<div style="font-size:10px; color:var(--green)">${count} zap.</div>` : ''}`;
+        cell.onclick = () => { selectedDay = dateStr; renderCalendar(); renderHours(); closeForm(); };
+        grid.appendChild(cell);
+    }
+}
+
+function renderHours() {
+    const list = document.getElementById('hoursList'); list.innerHTML = '';
+    document.getElementById('selectedDateTitle').textContent = "Data: " + selectedDay;
+    const dayData = globalData[selectedDay] || {};
+    ["07:00","09:00","11:00","13:00","15:00","17:00","19:00","21:00"].forEach(t => {
+        const res = dayData[t];
+        const row = document.createElement('div');
+        row.className = `hour-row ${res ? 'reserved' : ''}`;
+        row.innerHTML = `
+            <div><b>${t}</b><br><span style="font-size:12px">${res ? res.name : 'Wolne'}</span></div>
+            <button class="btn ${res ? 'btn-details' : 'btn-main'}" onclick="openForm('${t}')">
+                ${res ? 'SZCZEGÓŁY' : 'ZAREZERWUJ'}
+            </button>
+        `;
+        list.appendChild(row);
+    });
+}
+
+function openForm(t) {
+    selectedTime = t;
+    document.getElementById('bookingForm').style.display = 'block';
+    document.getElementById('formTimeTitle').textContent = "Termin: " + t;
+    const data = (globalData[selectedDay] || {})[t] || {};
+    document.getElementById('fName').value = data.name || '';
+    document.getElementById('fPhone').value = data.phone || '';
+    document.getElementById('fAddress').value = data.reg || '';
+    document.getElementById('fNote').value = data.note || '';
+    document.getElementById('delBtn').style.display = data.name ? 'block' : 'none';
+}
+
+async function saveBooking() {
+    const entry = {
+        name: document.getElementById('fName').value,
+        phone: document.getElementById('fPhone').value,
+        reg: document.getElementById('fAddress').value,
+        note: document.getElementById('fNote').value
+    };
+    if(!entry.name) return alert("Wpisz imię!");
+    await db.ref(`bookings/${selectedDay}/${selectedTime}`).set(entry);
+    closeForm();
+}
+
+async function deleteBooking() {
+    if(confirm("Usunąć?")) { await db.ref(`bookings/${selectedDay}/${selectedTime}`).remove(); closeForm(); }
+}
+
+function closeForm() { document.getElementById('bookingForm').style.display = 'none'; }
+function moveMonth(n) { currentMonth.setMonth(currentMonth.getMonth() + n); renderCalendar(); }
+renderCalendar();
+</script>
+</body>
+</html>
